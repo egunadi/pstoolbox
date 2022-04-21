@@ -1,5 +1,5 @@
 -- [ONC RWT Metrics v1.0]
--- 04.07.2022
+-- 04.20.2022
 
 /********************************************************/
 /*    C   O   N   F   I   D   E   N   T   I   A   L     */
@@ -31,416 +31,446 @@ GO
 CREATE PROCEDURE dbo.rwt_getmetrics
   @i_customer VARCHAR(50), 
   @i_caresetting VARCHAR(50),
-  @i_startdate DATETIME
+  @i_enddate DATETIME
 AS
 SET NOCOUNT ON;
 
-DECLARE @_startdate1 DATETIME,
-        @_enddate DATETIME;
+DECLARE @_startdate DATETIME,
+        @_startdate1 DATETIME,
+        @_sqlcmd NVARCHAR(MAX);
 
-SET @_enddate = dateadd(month, 3, @i_startdate); --calculates 90 day period from @i_startdate
-SET @_startDate1 = dateadd(month, -9, @i_startdate); --for PHR data export, date range is 1 year
+SET @_startdate = dateadd(month, -3, @i_enddate); --calculates 90 day period from @i_enddate
+SET @_startDate1 = dateadd(month, -12, @i_enddate); --for PHR data export, date range is 1 year
 
-SELECT @i_customer AS [Customer],
-       @i_caresetting AS [CareSetting],
-       company AS [Company],
-       CONVERT(date, @i_startdate) AS [StartDate],
-       CONVERT(date, @_enddate) AS [EndDate],
-       'RxCreate' AS [Measure],
-       'Controlled Substance Schedule' AS [VariableType],
-       csasched AS [Variable],
-       COUNT(company) AS [Count]
-FROM dbo.CLRXHIST
-WHERE source = 'I'
-      AND pharmacytranid LIKE '%-%'
-      AND rxdate >= @i_startdate
-      AND rxdate <= @_enddate
-GROUP BY company,
-         csasched
+SET @_sqlcmd = N'
+  SELECT @i_customer AS [Customer],
+         @i_caresetting AS [CareSetting],
+         company AS [Company],
+         CONVERT(date, @_startdate) AS [StartDate],
+         CONVERT(date, @i_enddate) AS [EndDate],
+         ''RxCreate'' AS [Measure],
+         ''Controlled Substance Schedule'' AS [VariableType],
+         csasched AS [Variable],
+         COUNT(company) AS [Count]
+  FROM dbo.CLRXHIST
+  WHERE source = ''I''
+        AND pharmacytranid LIKE ''%-%''
+        AND rxdate >= @_startdate
+        AND rxdate <= @i_enddate
+  GROUP BY company,
+           csasched
 
-UNION ALL
-/*This query returns how many electronic RX required a change after the doctor sent the original RX - Pulled from NCRxChangeDetail as the source*/
-SELECT @i_customer AS [Customer],
-       @i_caresetting AS [CareSetting],
-       d.company AS [Company],
-       CONVERT(date, @i_startdate) AS [StartDate],
-       CONVERT(date, @_enddate) AS [EndDate],
-       'RxChange' AS [Measure],
-       'Reason for Change' AS [VariableType],
-       ChangeRequest AS [Variable],
-       COUNT(*) AS [Count]
-FROM dbo.NCRxChangeDetail AS D
-  LEFT JOIN dbo.CLRXHIST AS R
-    ON D.OriginalTransactionGuid = r.pharmacytranid
-WHERE ReceivedTimestamp BETWEEN @i_startdate AND @_enddate
-GROUP BY d.company,
-         changerequest
+  UNION ALL
+  /*this query returns multiple variables indicating status of renewal request.   See note "3" above for calculation instructions.  (Variable ''X'' is not processed or handled by non-electronic means) - Pulled from CLRXRENEWALX as the source 
 
-UNION ALL
-/*This query returns how many electronic Rx were cancelled during the 90-day window. - Pulled from NCRxCancelStatus as the source 
+  */
+  SELECT @i_customer AS [Customer],
+         @i_caresetting AS [CareSetting],
+         company AS [Company],
+         CONVERT(date, @_startdate) AS [StartDate],
+         CONVERT(date, @i_enddate) AS [EndDate],
+         ''RxRenewals'' AS [Measure],
+         ''Transmission Status'' AS [VariableType],
+         [status] AS [Variable],
+         COUNT([Status]) AS [Count]
+  FROM dbo.CLRXRENEWALX
+  WHERE xacdate >= @_startdate
+        AND xacdate <= @i_enddate
+        AND [status] NOT IN ( ''X'' )
+  GROUP BY company,
+           [status]
 
-This Table is NOT company specific, thus it is comprehensive and includes all companies in a single database
+  UNION ALL
+  /*This query returns the number of CCDA sent from MI PHR. Pulled from CLDOCS as Source.- For this script the execute statement needs to include the following variables: [startdate] and [enddate] */
+  SELECT @i_customer AS [Customer],
+         @i_caresetting AS [CareSetting],
+         company AS [Company],
+         CONVERT(date, @_startdate) AS [StartDate],
+         CONVERT(date, @i_enddate) AS [EndDate],
+         ''CCDACreate'' AS [Measure],
+         '''' AS [VariableType],
+         '''' AS [Variable],
+         COUNT(company) AS [Count]
+  FROM dbo.CLDOCS
+  WHERE chartdisplayname IN (
+                              SELECT Parameter
+                              FROM dbo.zSettingsApps
+                              WHERE setting LIKE ''CCDChartDiscExport''
+                            )
+        AND filespec like ''%.HTML''                
+        AND createdate >= @_startdate
+        AND createdate <= @i_enddate
+  GROUP BY company
 
-No Optional Value for this query */
-SELECT @i_customer AS [Customer],
-       @i_caresetting AS [CareSetting],
-       'All companies' AS [Company],
-       CONVERT(date, @i_startdate) AS [StartDate],
-       CONVERT(date, @_enddate) AS [EndDate],
-       'RxCancel' AS [Measure],
-       '' AS [VariableType],
-       '' AS [Variable],
-       COUNT(ID) AS [Count]
-FROM dbo.NCRxCancelStatus
-WHERE LastUpdate BETWEEN @i_startdate AND @_enddate
+  UNION ALL
+  /*This query returns the number of CCDA received via PHR - Pulled from CLDOCS as source. For this script the execute statement needs to include the following variables: [startdate] and [enddate],  */
+  SELECT @i_customer AS [Customer],
+         @i_caresetting AS [CareSetting],
+         company AS [Company],
+         CONVERT(date, @_startdate) AS [StartDate],
+         CONVERT(date, @i_enddate) AS [EndDate],
+         ''CCDASave'' AS [Measure],
+         '''' AS [VariableType],
+         '''' AS [Variable],
+         COUNT(company) AS [Count]
+  FROM dbo.CLDOCS
+  WHERE chartdisplayname IN (
+                              SELECT Parameter
+                              FROM dbo.zSettingsApps
+                              WHERE setting LIKE ''CCDChartDisc''
+                            )
+        AND createdate BETWEEN @_startdate AND @i_enddate
+        AND status <> ''D''
+        AND filespec LIKE ''%.html''
+  GROUP BY company
 
-UNION ALL
-/*this query returns multiple variables indicating status of renewal request.   See note "3" above for calculation instructions.  (Variable 'X' is not processed or handled by non-electronic means) - Pulled from CLRXRENEWALX as the source 
+  UNION ALL
+  /*This query returns the number of medications reconciled via the PHR in a 90 day period*/
+  SELECT @i_customer AS [Customer],
+         @i_caresetting AS [CareSetting],
+         COMPANY AS [Company],
+         CONVERT(date, @_startdate) AS [StartDate],
+         CONVERT(date, @i_enddate) AS [EndDate],
+         ''Medications Reconcilation'' AS [Measure],
+         ''Order Description'' AS [VariableType],
+         ODESC AS [Variable],
+         COUNT(ODESC) AS [Count]
+  FROM dbo.CLORDER
+  WHERE ORDERDATE >= @_startdate
+        AND ORDERDATE <= @i_enddate
+        AND ODESC = ''Medications Reconciliation''
+        AND OMEMO = ''from C-CDA''
+        AND STATUS <> ''D''
+  GROUP BY COMPANY,
+           ODESC
 
-*/
-SELECT @i_customer AS [Customer],
-       @i_caresetting AS [CareSetting],
-       company AS [Company],
-       CONVERT(date, @i_startdate) AS [StartDate],
-       CONVERT(date, @_enddate) AS [EndDate],
-       'RxRenewals' AS [Measure],
-       'Transmission Status' AS [VariableType],
-       [status] AS [Variable],
-       COUNT([Status]) AS [Count]
-FROM dbo.CLRXRENEWALX
-WHERE xacdate >= @i_startdate
-      AND xacdate <= @_enddate
-      AND [status] NOT IN ( 'X' )
-GROUP BY company,
-         [status]
+  UNION ALL
+  /*This query returns the number of allergies reconciled via the PHR in a 90 day period*/
+  SELECT @i_customer AS [Customer],
+         @i_caresetting AS [CareSetting],
+         COMPANY AS [Company],
+         CONVERT(date, @_startdate) AS [StartDate],
+         CONVERT(date, @i_enddate) AS [EndDate],
+         ''Allergies Reconcilation'' AS [Measure],
+         ''Order Description'' AS [VariableType],
+         ODESC AS [Variable],
+         COUNT(ODESC) AS [Count]
+  FROM dbo.CLORDER
+  WHERE ORDERDATE >= @_startdate
+        AND ORDERDATE <= @i_enddate
+        AND ODESC = ''Allergies Reconciliation''
+        AND OMEMO = ''from C-CDA''
+        AND STATUS <> ''D''
+  GROUP BY COMPANY,
+           ODESC
 
-UNION ALL
-/*This query returns the number of CCDA sent from MI PHR. Pulled from CLDOCS as Source.- For this script the execute statement needs to include the following variables: [startdate] and [enddate] */
-SELECT @i_customer AS [Customer],
-       @i_caresetting AS [CareSetting],
-       company AS [Company],
-       CONVERT(date, @i_startdate) AS [StartDate],
-       CONVERT(date, @_enddate) AS [EndDate],
-       'CCDACreate' AS [Measure],
-       '' AS [VariableType],
-       '' AS [Variable],
-       COUNT(company) AS [Count]
-FROM dbo.CLDOCS
-WHERE chartdisplayname IN (
-                            SELECT Parameter
-                            FROM dbo.zSettingsApps
-                            WHERE setting LIKE 'CCDChartDiscExport'
-                          )
-      AND filespec like '%.HTML'                
-      AND createdate >= @i_startdate
-      AND createdate <= @_enddate
-GROUP BY company
+  UNION ALL
+  /*This query returns the number of diagnosis reconciled via the PHR in a 90 day period*/
+  SELECT @i_customer AS [Customer],
+         @i_caresetting AS [CareSetting],
+         COMPANY AS [Company],
+         CONVERT(date, @_startdate) AS [StartDate],
+         CONVERT(date, @i_enddate) AS [EndDate],
+         ''Problems Reconcilation'' AS [Measure],
+         ''Order Description'' AS [VariableType],
+         ODESC AS [Variable],
+         COUNT(ODESC) AS [Count]
+  FROM dbo.CLORDER
+  WHERE ORDERDATE >= @_startdate
+        AND ORDERDATE <= @i_enddate
+        AND ODESC IN ( ''Problems Reconciliation'' )
+        AND OMEMO = ''from C-CDA''
+        AND STATUS <> ''D''
+  GROUP BY COMPANY,
+           ODESC
 
-UNION ALL
-/*This query returns the number of messages sent from PHR outbound - Pulled from zEmailLog as source 
+  /*  No longer needed as Drummond  understand the query above will contain required data*/
+  UNION ALL
+  /*This query returns the number of restricted CCDA sent from MI PHR. Pulled from CLDOCS as Source.- For this script the execute statement needs to include the following variables: [startdate] and [enddate]  */
+  SELECT @i_customer AS [Customer],
+         @i_caresetting AS [CareSetting],
+         company AS [Company],
+         CONVERT(date, @_startdate) AS [StartDate],
+         CONVERT(date, @i_enddate) AS [EndDate],
+         ''CCDARestrictedCreated'' AS [Measure],
+         '''' AS [VariableType],
+         '''' AS [Variable],
+         COUNT(company) AS [Count]
+  FROM dbo.CLDOCS
+  WHERE chartdisplayname IN (
+                              SELECT Parameter
+                              FROM dbo.zSettingsApps
+                              WHERE setting LIKE ''CCDRestrictedChartDiscExport''
+                            )
+        AND status <> ''D''
+        AND filespec LIKE ''%.html''
+        AND createdate
+        BETWEEN @_startdate AND @i_enddate
+  GROUP BY company
 
-/*results come back as
-dispatched
-processed*/
+  UNION ALL
+  /* This query returns the number of restricted CCDA recieved from MI PHR. Pulled from CLDOCS as Source.- For this script the execute statement needs to include the following variables: [startdate] and [enddate] 
 
-*/
-SELECT @i_customer AS [Customer],
-       @i_caresetting AS [CareSetting],
-       company AS [Company],
-       CONVERT(date, @i_startdate) AS [StartDate],
-       CONVERT(date, @_enddate) AS [EndDate],
-       'CCDASent' AS [Measure],
-       'Updox Export Status' AS [VariableType],
-       mdnStatus AS [Variable],
-       COUNT(mdnStatus) AS [Count]
-FROM dbo.zEmailLog
-  INNER JOIN dbo.zEmailMdnStatus
-    ON zEmailLog.zEmailMessageID = zEmailMdnStatus.EmailID
-WHERE entrydate BETWEEN @i_startdate AND @_enddate
-GROUP BY company,
-         mdnStatus
+  */
+  SELECT @i_customer AS [Customer],
+         @i_caresetting AS [CareSetting],
+         company AS [Company],
+         CONVERT(date, @_startdate) AS [StartDate],
+         CONVERT(date, @i_enddate) AS [EndDate],
+         ''CCDARestrictedReceived'' AS [Measure],
+         '''' AS [VariableType],
+         '''' AS [Variable],
+         COUNT(company) AS [Count]
+  FROM dbo.CLDOCS
+  WHERE chartdisplayname IN (
+                              SELECT Parameter
+                              FROM dbo.zSettingsApps
+                              WHERE setting LIKE ''CCDRestrictedChartDisc''
+                            )
+        AND status <> ''D''
+        AND filespec LIKE ''%.html''
+        AND createdate
+        BETWEEN @_startdate AND @i_enddate
+  GROUP BY COMPANY
 
-UNION ALL
-/*This query returns the number of CCDA received via PHR - Pulled from CLDOCS as source. For this script the execute statement needs to include the following variables: [startdate] and [enddate],  */
-SELECT @i_customer AS [Customer],
-       @i_caresetting AS [CareSetting],
-       company AS [Company],
-       CONVERT(date, @i_startdate) AS [StartDate],
-       CONVERT(date, @_enddate) AS [EndDate],
-       'CCDASave' AS [Measure],
-       '' AS [VariableType],
-       '' AS [Variable],
-       COUNT(company) AS [Count]
-FROM dbo.CLDOCS
-WHERE chartdisplayname IN (
-                            SELECT Parameter
-                            FROM dbo.zSettingsApps
-                            WHERE setting LIKE 'CCDChartDisc'
-                          )
-      AND createdate BETWEEN @i_startdate AND @_enddate
-      AND status <> 'D'
-      AND filespec LIKE '%.html'
-GROUP BY company
+  UNION ALL
+  /*This is a duplicative selection from above as all restricted summaries are sequestered */
+  SELECT @i_customer AS [Customer],
+         @i_caresetting AS [CareSetting],
+         company AS [Company],
+         CONVERT(date, @_startdate) AS [StartDate],
+         CONVERT(date, @i_enddate) AS [EndDate],
+         ''RestrictedReceived'' AS [Measure],
+         '''' AS [VariableType],
+         '''' AS [Variable],
+         COUNT(company) AS [Count]
+  FROM dbo.CLDOCS
+  WHERE chartdisplayname IN (
+                              SELECT Parameter
+                              FROM dbo.zSettingsApps
+                              WHERE setting LIKE ''CCDRestrictedChartDisc''
+                            )
+        AND createdate
+        BETWEEN @_startdate AND @i_enddate
+        AND status <> ''D''
+        AND filespec LIKE ''%.html''
+  GROUP BY COMPANY';
 
-UNION ALL
-/*This query returns the number of medications reconciled via the PHR in a 90 day period*/
-SELECT @i_customer AS [Customer],
-       @i_caresetting AS [CareSetting],
-       COMPANY AS [Company],
-       CONVERT(date, @i_startdate) AS [StartDate],
-       CONVERT(date, @_enddate) AS [EndDate],
-       'Medications Reconcilation' AS [Measure],
-       'Order Description' AS [VariableType],
-       ODESC AS [Variable],
-       COUNT(ODESC) AS [Count]
-FROM dbo.CLORDER
-WHERE ORDERDATE >= @i_startdate
-      AND ORDERDATE <= @_enddate
-      AND ODESC = 'Medications Reconciliation'
-      AND OMEMO = 'from C-CDA'
-      AND STATUS <> 'D'
-GROUP BY COMPANY,
-         ODESC
+/****************************************/
+/*    O   P   T   I   O   N   A   L     */
+/****************************************/
 
-UNION ALL
-/*This query returns the number of allergies reconciled via the PHR in a 90 day period*/
-SELECT @i_customer AS [Customer],
-       @i_caresetting AS [CareSetting],
-       COMPANY AS [Company],
-       CONVERT(date, @i_startdate) AS [StartDate],
-       CONVERT(date, @_enddate) AS [EndDate],
-       'Allergies Reconcilation' AS [Measure],
-       'Order Description' AS [VariableType],
-       ODESC AS [Variable],
-       COUNT(ODESC) AS [Count]
-FROM dbo.CLORDER
-WHERE ORDERDATE >= @i_startdate
-      AND ORDERDATE <= @_enddate
-      AND ODESC = 'Allergies Reconciliation'
-      AND OMEMO = 'from C-CDA'
-      AND STATUS <> 'D'
-GROUP BY COMPANY,
-         ODESC
+IF EXISTS (SELECT * FROM sys.columns WHERE OBJECT_ID = OBJECT_ID(N'[dbo].[zEmailLog]') AND name = 'zEmailMessageID')
+  AND EXISTS (SELECT * FROM sys.columns WHERE OBJECT_ID = OBJECT_ID(N'[dbo].[zEmailLog]') AND name = 'entrydate')
+  SET @_sqlcmd = @_sqlcmd + N'
+    UNION ALL
+    /*This query returns the number of messages sent from PHR outbound - Pulled from zEmailLog as source 
 
-UNION ALL
-/*This query returns the number of diagnosis reconciled via the PHR in a 90 day period*/
-SELECT @i_customer AS [Customer],
-       @i_caresetting AS [CareSetting],
-       COMPANY AS [Company],
-       CONVERT(date, @i_startdate) AS [StartDate],
-       CONVERT(date, @_enddate) AS [EndDate],
-       'Problems Reconcilation' AS [Measure],
-       'Order Description' AS [VariableType],
-       ODESC AS [Variable],
-       COUNT(ODESC) AS [Count]
-FROM dbo.CLORDER
-WHERE ORDERDATE >= @i_startdate
-      AND ORDERDATE <= @_enddate
-      AND ODESC IN ( 'Problems Reconciliation' )
-      AND OMEMO = 'from C-CDA'
-      AND STATUS <> 'D'
-GROUP BY COMPANY,
-         ODESC
+    /*results come back as
+    dispatched
+    processed*/
 
-UNION ALL
-/*This query returns exported CCDA by a single patient as a single transction*/
-SELECT @i_customer AS [Customer],
-       @i_caresetting AS [CareSetting],
-       e.Company AS [Company],
-       CONVERT(date, @_startdate1) AS [StartDate],
-       CONVERT(date, @_enddate) AS [EndDate],
-       'Export of 1 pt' AS [Measure],
-       'Export Status' AS [VariableType],
-       e.StatusCode AS [Variable],
-       COUNT(e.StatusCode)
-FROM CCDA.JobExport AS E
-  INNER JOIN CCDA.JobLog AS L
-    ON E.JobLogID = L.JobLogID
-WHERE ExportedDate BETWEEN @_startdate1 AND @_enddate
-GROUP BY l.JobLogID,
-         l.StatusCode,
-         e.StatusCode,
-         Company
-HAVING COUNT(l.JobLogID) = 1
+    */
+    SELECT @i_customer AS [Customer],
+           @i_caresetting AS [CareSetting],
+           company AS [Company],
+           CONVERT(date, @_startdate) AS [StartDate],
+           CONVERT(date, @i_enddate) AS [EndDate],
+           ''CCDASent'' AS [Measure],
+           ''Updox Export Status'' AS [VariableType],
+           mdnStatus AS [Variable],
+           COUNT(mdnStatus) AS [Count]
+    FROM dbo.zEmailLog
+      INNER JOIN dbo.zEmailMdnStatus
+        ON zEmailLog.zEmailMessageID = zEmailMdnStatus.EmailID
+    WHERE entrydate BETWEEN @_startdate AND @i_enddate
+    GROUP BY company,
+             mdnStatus';
 
-/*This query returns the count of completed, failed or canceled exported patient greater than or equal to 2*/
-UNION ALL
-/* potential answer are:L.StatusCode and E.StatusCode:
+IF EXISTS (SELECT * FROM sys.tables WHERE SCHEMA_NAME(schema_id) = 'CCDA' AND name = 'JobExport' AND [type]='U')
+  SET @_sqlcmd = @_sqlcmd + N'
+    UNION ALL
+    /*This query returns exported CCDA by a single patient as a single transction*/
+    SELECT @i_customer AS [Customer],
+           @i_caresetting AS [CareSetting],
+           e.Company AS [Company],
+           CONVERT(date, @_startdate1) AS [StartDate],
+           CONVERT(date, @i_enddate) AS [EndDate],
+           ''Export of 1 pt'' AS [Measure],
+           ''Export Status'' AS [VariableType],
+           e.StatusCode AS [Variable],
+           COUNT(e.StatusCode)
+    FROM CCDA.JobExport AS E
+      INNER JOIN CCDA.JobLog AS L
+        ON E.JobLogID = L.JobLogID
+    WHERE ExportedDate BETWEEN @_startdate1 AND @i_enddate
+    GROUP BY l.JobLogID,
+             l.StatusCode,
+             e.StatusCode,
+             Company
+    HAVING COUNT(l.JobLogID) = 1
 
-Batch: Completed; CCDA sent: Failed  -- All batch members compiled correctly, Not all records exported
-Batch: Completed; CCDA sent: Completed  -- Batch compiled and exported correctly
-Batch: Failed; CCDA sent: Failed --Batch members did not compile correctly, records did not export
-Batch: Failed; CCDA sent: Completed -- Batch compile failed, Those batch members that compiled exported correctly
-See step 6 at top of script for instructions               
-*/
-SELECT @i_customer AS [Customer],
-       @i_caresetting AS [CareSetting],
-       e.Company AS [Company],
-       CONVERT(date, @_startdate1) AS [StartDate],
-       CONVERT(date, @_enddate) AS [EndDate],
-       'batch :' + l.StatusCode AS [Measure],
-     'Export Status' AS [VariableType],
-       e.StatusCode AS [Variable],
-       COUNT(l.StatusCode) AS [Count]
-FROM CCDA.JobExport AS E
-  INNER JOIN CCDA.JobLog AS L
-    ON E.JobLogID = L.JobLogID
-WHERE ExportedDate BETWEEN @_startdate1 AND @_enddate
-GROUP BY l.JobLogID,
-         l.StatusCode,
-         e.statusCode,
-         Company
-HAVING COUNT(l.JobLogID) >= 2
+    /*This query returns the count of completed, failed or canceled exported patient greater than or equal to 2*/
+    UNION ALL
+    /* potential answer are:L.StatusCode and E.StatusCode:
 
-/*  No longer needed as Drummond  understand the query above will contain required data*/
-UNION ALL
-/*This query returns the number of restricted CCDA sent from MI PHR. Pulled from CLDOCS as Source.- For this script the execute statement needs to include the following variables: [startdate] and [enddate]  */
-SELECT @i_customer AS [Customer],
-       @i_caresetting AS [CareSetting],
-       company AS [Company],
-       CONVERT(date, @i_startdate) AS [StartDate],
-       CONVERT(date, @_enddate) AS [EndDate],
-       'CCDARestrictedCreated' AS [Measure],
-       '' AS [VariableType],
-       '' AS [Variable],
-       COUNT(company) AS [Count]
-FROM dbo.CLDOCS
-WHERE chartdisplayname IN (
-                            SELECT Parameter
-                            FROM dbo.zSettingsApps
-                            WHERE setting LIKE 'CCDRestrictedChartDiscExport'
-                          )
-      AND status <> 'D'
-      AND filespec LIKE '%.html'
-      AND createdate
-      BETWEEN @i_startdate AND @_enddate
-GROUP BY company
+    Batch: Completed; CCDA sent: Failed  -- All batch members compiled correctly, Not all records exported
+    Batch: Completed; CCDA sent: Completed  -- Batch compiled and exported correctly
+    Batch: Failed; CCDA sent: Failed --Batch members did not compile correctly, records did not export
+    Batch: Failed; CCDA sent: Completed -- Batch compile failed, Those batch members that compiled exported correctly
+    See step 6 at top of script for instructions               
+    */
+    SELECT @i_customer AS [Customer],
+           @i_caresetting AS [CareSetting],
+           e.Company AS [Company],
+           CONVERT(date, @_startdate1) AS [StartDate],
+           CONVERT(date, @i_enddate) AS [EndDate],
+           ''batch :'' + l.StatusCode AS [Measure],
+           ''Export Status'' AS [VariableType],
+           e.StatusCode AS [Variable],
+           COUNT(l.StatusCode) AS [Count]
+    FROM CCDA.JobExport AS E
+      INNER JOIN CCDA.JobLog AS L
+        ON E.JobLogID = L.JobLogID
+    WHERE ExportedDate BETWEEN @_startdate1 AND @i_enddate
+    GROUP BY l.JobLogID,
+             l.StatusCode,
+             e.statusCode,
+             Company
+    HAVING COUNT(l.JobLogID) >= 2';
 
-UNION ALL
-/* This query returns the number of restricted CCDA recieved from MI PHR. Pulled from CLDOCS as Source.- For this script the execute statement needs to include the following variables: [startdate] and [enddate] 
+IF EXISTS (SELECT * FROM sys.tables WHERE name='WPUSERACTIVITY' AND [type]='U')
+  SET @_sqlcmd = @_sqlcmd + N'
+    UNION ALL
+    /* This query looks at how many CDA are viewed from Patient Portal - 
 
-*/
-SELECT @i_customer AS [Customer],
-       @i_caresetting AS [CareSetting],
-       company AS [Company],
-       CONVERT(date, @i_startdate) AS [StartDate],
-       CONVERT(date, @_enddate) AS [EndDate],
-       'CCDARestrictedReceived' AS [Measure],
-       '' AS [VariableType],
-       '' AS [Variable],
-       COUNT(company) AS [Count]
-FROM dbo.CLDOCS
-WHERE chartdisplayname IN (
-                            SELECT Parameter
-                            FROM dbo.zSettingsApps
-                            WHERE setting LIKE 'CCDRestrictedChartDisc'
-                          )
-      AND status <> 'D'
-      AND filespec LIKE '%.html'
-      AND createdate
-      BETWEEN @i_startdate AND @_enddate
-GROUP BY COMPANY
+    pulled from WPUSERACTIVITY as the source */
+    SELECT @i_customer AS [Customer],
+           @i_caresetting AS [CareSetting],
+           company AS [Company],
+           CONVERT(date, @_startdate) AS [StartDate],
+           CONVERT(date, @i_enddate) AS [EndDate],
+           ''Portal View'' AS [Measure],
+           ''Action Code'' AS [VariableType],
+           actioncode AS [Variable],
+           COUNT(actioncode) AS [Count]
+    FROM dbo.WPUSERACTIVITY
+    WHERE timestamp >= @_startdate
+          AND timestamp <= @i_enddate
+          AND actioncode IN ( ''VW_CCD'' )
+    GROUP BY company,
+             actioncode
 
-UNION ALL
-/*This is a duplicative selection from above as all restricted summaries are sequestered */
-SELECT @i_customer AS [Customer],
-       @i_caresetting AS [CareSetting],
-       company AS [Company],
-       CONVERT(date, @i_startdate) AS [StartDate],
-       CONVERT(date, @_enddate) AS [EndDate],
-       'RestrictedReceived' AS [Measure],
-       '' AS [VariableType],
-       '' AS [Variable],
-       COUNT(company) AS [Count]
-FROM dbo.CLDOCS
-WHERE chartdisplayname IN (
-                            SELECT Parameter
-                            FROM dbo.zSettingsApps
-                            WHERE setting LIKE 'CCDRestrictedChartDisc'
-                          )
-      AND createdate
-      BETWEEN @i_startdate AND @_enddate
-      AND status <> 'D'
-      AND filespec LIKE '%.html'
-GROUP BY COMPANY
+    UNION ALL
+    /*This query looks at how many CDA are downloaded from Patient Portal
 
-UNION ALL
-/* This query looks at how many CDA are viewed from Patient Portal - 
+    pulled from WPUSERACTIVITY as the source*/
+    SELECT @i_customer AS [Customer],
+           @i_caresetting AS [CareSetting],
+           company AS [Company],
+           CONVERT(date, @_startdate) AS [StartDate],
+           CONVERT(date, @i_enddate) AS [EndDate],
+           ''Portal Download'' AS [Measure],
+           ''Action Code'' AS [VariableType],
+           actioncode AS [Variable],
+           COUNT(actioncode) AS [Count]
+    FROM dbo.WPUSERACTIVITY
+    WHERE timestamp >= @_startdate
+          AND timestamp <= @i_enddate
+          AND actioncode IN ( ''DL_CCDZ'' )
+    GROUP BY company,
+             actioncode
 
-pulled from WPUSERACTIVITY as the source */
-SELECT @i_customer AS [Customer],
-       @i_caresetting AS [CareSetting],
-       company AS [Company],
-       CONVERT(date, @i_startdate) AS [StartDate],
-       CONVERT(date, @_enddate) AS [EndDate],
-       'Portal View' AS [Measure],
-       'Action Code' AS [VariableType],
-       actioncode AS [Variable],
-       COUNT(actioncode) AS [Count]
-FROM dbo.WPUSERACTIVITY
-WHERE timestamp >= @i_startdate
-      AND timestamp <= @_enddate
-      AND actioncode IN ( 'VW_CCD' )
-GROUP BY company,
-         actioncode
+    UNION ALL
+    /*This query looks at how many CDA are unsecure from Patient Portal
 
-UNION ALL
-/*This query looks at how many CDA are downloaded from Patient Portal
+    pulled from WPUSERACTIVITY as the source*/
+    SELECT @i_customer AS [Customer],
+           @i_caresetting AS [CareSetting],
+           company AS [Company],
+           CONVERT(date, @_startdate) AS [StartDate],
+           CONVERT(date, @i_enddate) AS [EndDate],
+           ''Portal Xmit Unencrypt'' AS [Measure],
+           ''Action'' AS [VariableType],
+           actioncode AS [Variable],
+           COUNT(actioncode) AS [Count]
+    FROM dbo.WPUSERACTIVITY
+    WHERE timestamp >= @_startdate
+          AND timestamp <= @i_enddate
+          AND actioncode = ''EM_CCD''
+    GROUP BY company,
+             actioncode
 
-pulled from WPUSERACTIVITY as the source*/
-SELECT @i_customer AS [Customer],
-       @i_caresetting AS [CareSetting],
-       company AS [Company],
-       CONVERT(date, @i_startdate) AS [StartDate],
-       CONVERT(date, @_enddate) AS [EndDate],
-       'Portal Download' AS [Measure],
-       'Action Code' AS [VariableType],
-       actioncode AS [Variable],
-       COUNT(actioncode) AS [Count]
-FROM dbo.WPUSERACTIVITY
-WHERE timestamp >= @i_startdate
-      AND timestamp <= @_enddate
-      AND actioncode IN ( 'DL_CCDZ' )
-GROUP BY company,
-         actioncode
+    UNION ALL
+    /*This query looks at how many CDA are secure from Patient Portal -pulled from WPUSERACTIVITY as the source*/
+    SELECT @i_customer AS [Customer],
+           @i_caresetting AS [CareSetting],
+           company AS [Company],
+           CONVERT(date, @_startdate) AS [StartDate],
+           CONVERT(date, @i_enddate) AS [EndDate],
+           ''Portal Xmit Encrypt'' AS [Measure],
+           ''Action Code'' AS [VariableType],
+           actioncode AS [Variable],
+           COUNT(actioncode) AS [Count]
+    FROM dbo.WPUSERACTIVITY
+    WHERE timestamp >= @_startdate
+          AND timestamp <= @i_enddate
+          AND actioncode IN ( ''DM_CCD'' )
+    GROUP BY company,
+             actioncode';
 
-UNION ALL
-/*This query looks at how many CDA are unsecure from Patient Portal
+IF EXISTS (SELECT * FROM sys.tables WHERE name='NCRxCancelStatus' AND [type]='U')
+  SET @_sqlcmd = @_sqlcmd + N'
+    UNION ALL
+    /*This query returns how many electronic Rx were cancelled during the 90-day window. - Pulled from NCRxCancelStatus as the source 
 
-pulled from WPUSERACTIVITY as the source*/
-SELECT @i_customer AS [Customer],
-       @i_caresetting AS [CareSetting],
-       company AS [Company],
-       CONVERT(date, @i_startdate) AS [StartDate],
-       CONVERT(date, @_enddate) AS [EndDate],
-       'Portal Xmit Unencrypt' AS [Measure],
-     'Action' AS [VariableType],
-       actioncode AS [Variable],
-       COUNT(actioncode) AS [Count]
-FROM dbo.WPUSERACTIVITY
-WHERE timestamp >= @i_startdate
-      AND timestamp <= @_enddate
-      AND actioncode = 'EM_CCD'
-GROUP BY company,
-         actioncode
+    This Table is NOT company specific, thus it is comprehensive and includes all companies in a single database
 
-UNION ALL
-/*This query looks at how many CDA are secure from Patient Portal -pulled from WPUSERACTIVITY as the source*/
-SELECT @i_customer AS [Customer],
-       @i_caresetting AS [CareSetting],
-       company AS [Company],
-       CONVERT(date, @i_startdate) AS [StartDate],
-       CONVERT(date, @_enddate) AS [EndDate],
-       'Portal Xmit Encrypt' AS [Measure],
-       'Action Code' AS [VariableType],
-       actioncode AS [Variable],
-       COUNT(actioncode) AS [Count]
-FROM dbo.WPUSERACTIVITY
-WHERE timestamp >= @i_startdate
-      AND timestamp <= @_enddate
-      AND actioncode IN ( 'DM_CCD' )
-GROUP BY company,
-         actioncode;
+    No Optional Value for this query */
+    SELECT @i_customer AS [Customer],
+           @i_caresetting AS [CareSetting],
+           ''All companies'' AS [Company],
+           CONVERT(date, @_startdate) AS [StartDate],
+           CONVERT(date, @i_enddate) AS [EndDate],
+           ''RxCancel'' AS [Measure],
+           '''' AS [VariableType],
+           '''' AS [Variable],
+           COUNT(ID) AS [Count]
+    FROM dbo.NCRxCancelStatus
+    WHERE LastUpdate BETWEEN @_startdate AND @i_enddate';
+
+IF EXISTS (SELECT * FROM sys.tables WHERE name='NCRxChangeDetail' AND [type]='U')
+  SET @_sqlcmd = @_sqlcmd + N'
+    UNION ALL
+    /*This query returns how many electronic RX required a change after the doctor sent the original RX - Pulled from NCRxChangeDetail as the source*/
+    SELECT @i_customer AS [Customer],
+           @i_caresetting AS [CareSetting],
+           d.company AS [Company],
+           CONVERT(date, @_startdate) AS [StartDate],
+           CONVERT(date, @i_enddate) AS [EndDate],
+           ''RxChange'' AS [Measure],
+           ''Reason for Change'' AS [VariableType],
+           ChangeRequest AS [Variable],
+           COUNT(*) AS [Count]
+    FROM dbo.NCRxChangeDetail AS D
+      LEFT JOIN dbo.CLRXHIST AS R
+        ON D.OriginalTransactionGuid = r.pharmacytranid
+    WHERE ReceivedTimestamp BETWEEN @_startdate AND @i_enddate
+    GROUP BY d.company,
+             changerequest';
+
+EXEC sp_executesql
+  @stmt = @_sqlcmd,
+  @params = N'@i_customer VARCHAR(50), 
+              @i_caresetting VARCHAR(50),
+              @_startdate DATETIME,
+              @_startdate1 DATETIME,
+              @i_enddate DATETIME',
+  @i_customer = @i_customer,
+  @i_caresetting = @i_caresetting,
+  @_startdate = @_startdate,
+  @_startdate1 = @_startdate1,
+  @i_enddate = @i_enddate;
 GO
 
 GRANT EXECUTE ON dbo.rwt_getmetrics TO MWUSER;

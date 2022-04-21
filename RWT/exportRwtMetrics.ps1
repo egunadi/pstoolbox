@@ -6,11 +6,11 @@ $database = "medical"
 $customer = "{Customer Name}"
 # Set to Customer Care Setting when installing the script
 $caresetting = "{Customer Care Setting}"
-# Set to start date of the 90-day measurement period (defaults to current day)
+# Set to end date of the 90-day measurement period (defaults to current day)
 ## This should be dynamic if run using a scheduled job
 ## For one-time runs, this can be customized as such: 
-## $startdate =  (Get-Date -Year 2022 -Month 1 -Day 1).ToString("yyyyMMdd")
-$startdate = (Get-Date).ToString("yyyyMMdd")
+## $enddate =  (Get-Date -Year 2022 -Month 1 -Day 1).ToString("yyyyMMdd")
+$enddate = (Get-Date).ToString("yyyyMMdd")
 
 # Ensure "Export" and "Archive" directories exist
 $date_time = Get-Date -Format yyyyMMddHHmm
@@ -38,8 +38,8 @@ try {
   # Run stored proc and output result as CSV
   $file_path = $export_path + "\rwtMetrics." + $date_time + ".csv"
   Invoke-DbaQuery -Query "exec dbo.rwt_getmetrics `
-      @i_customer=@customer, @i_caresetting=@caresetting, @i_startdate=@startdate" `
-    -SqlParameters @{ customer=$customer; caresetting=$caresetting; startdate=$startdate } |  
+      @i_customer=@customer, @i_caresetting=@caresetting, @i_enddate=@enddate" `
+    -SqlParameters @{ customer=$customer; caresetting=$caresetting; enddate=$enddate } |  
   Select-Object | 
   Export-Csv -Path $file_path -NoTypeInformation
 }
