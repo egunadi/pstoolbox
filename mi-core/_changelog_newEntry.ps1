@@ -1,11 +1,11 @@
 $logdate = Get-Date -Format "yyyy-MM-dd HH:mm:00"
-$path = "/Users/egunadi/Git/mi-core-sql-v77/_changelog.xml"
+$path = "/Users/egunadi/Git/mi-core-sql/_changelog.xml"
 
 #Append template
 $include =            "   <logentry>`r`n"
 $include = $include + "      <scripts>`r`n"
 $include = $include + "         <script>mscreate.sql</script>`r`n"
-$include = $include + "         <script>pv77.sql</script>`r`n"
+$include = $include + "         <script>pv78.sql</script>`r`n"
 $include = $include + "      </scripts>`r`n"
 $include = $include + "      <logdate>" + $logdate + "</logdate>`r`n"
 $include = $include + "      <logkey>[]</logkey>`r`n"
