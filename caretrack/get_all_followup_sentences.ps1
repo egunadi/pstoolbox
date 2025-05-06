@@ -8,8 +8,9 @@ $results = Get-ChildItem -Path $basePath -Recurse -Filter *.json | ForEach-Objec
         foreach ($sentenceObj in $jsonContent.followup_sentences) {
             if ($sentenceObj.sentence) {
                 [PSCustomObject]@{
-                    FilePath = $_.FullName
-                    Sentence = $sentenceObj.sentence
+                    FilePath   = $_.FullName
+                    Sentence   = $sentenceObj.sentence
+                    Confidence = $sentenceObj.confidence
                 }
             }
         }
@@ -19,4 +20,4 @@ $results = Get-ChildItem -Path $basePath -Recurse -Filter *.json | ForEach-Objec
 # Export to CSV
 $results | Export-Csv -Path $outputCsv -NoTypeInformation -Encoding UTF8
 
-Write-Host "Done! Saved to $outputCsv"
+Write-Host "Done! Extracted data saved to $outputCsv"
